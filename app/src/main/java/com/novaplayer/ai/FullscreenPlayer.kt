@@ -3,6 +3,7 @@ package com.novaplayer.ai
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.media.AudioManager
 import android.net.Uri
@@ -29,6 +30,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import java.net.URLEncoder
 
 @Composable
 fun FullscreenPlayer(
@@ -47,7 +49,6 @@ fun FullscreenPlayer(
     var speedMenu by remember { mutableStateOf(false) }
     var subtitleMenu by remember { mutableStateOf(false) }
     var playing by remember { mutableStateOf(player.isPlaying) }
-    var subtitleUri by remember { mutableStateOf<Uri?>(null) }
 
     val maxVolume = remember {
         audio.getStreamMaxVolume(
@@ -63,8 +64,6 @@ fun FullscreenPlayer(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            subtitleUri = uri
-
             val currentItem = player.currentMediaItem
             if (currentItem != null) {
                 val position = player.currentPosition
@@ -84,6 +83,30 @@ fun FullscreenPlayer(
                 player.prepare()
                 player.playWhenReady = wasPlaying
             }
+        }
+    }
+
+    fun searchOnline() {
+        val videoName = player.currentMediaItem
+            ?.mediaMetadata
+            ?.title
+            ?.toString()
+            ?: "Arabic movie subtitles"
+
+        val query = URLEncoder.encode(
+            "$videoName Arabic SRT subtitles",
+            "UTF-8"
+        )
+
+        val url = Uri.parse(
+            "https://www.google.com/search?q=$query"
+        )
+
+        val intent = Intent(Intent.ACTION_VIEW, url)
+
+        try {
+            context.startActivity(intent)
+        } catch (_: Exception) {
         }
     }
 
@@ -379,24 +402,25 @@ fun FullscreenPlayer(
                             }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Open SRT file") },
+                                text = {
+                                    Text("Search Online")
+                                },
                                 onClick = {
                                     subtitleMenu = false
-                                    subtitlePicker.launch(
-                                        arrayOf(
-                                            "application/x-subrip",
-                                            "text/plain",
-                                            "application/octet-stream",
-                                            "*/*"
-                                        )
-                                    )
+                                    searchOnline()
                                 }
                             )
 
                             DropdownMenuItem(
-                                text = { Text("Online subtitles - Coming soon") },
-                                enabled = false,
-                                onClick = {}
+                                text = {
+                                    Text("Open SRT File")
+                                },
+                                onClick = {
+                                    subtitleMenu = false
+                                    subtitlePicker.launch(
+                                        arrayOf("*/*")
+                                    )
+                                }
                             )
                         }
                     }
