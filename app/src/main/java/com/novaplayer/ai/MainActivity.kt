@@ -1,4 +1,3 @@
-
 package com.novaplayer.ai
 
 import android.Manifest
@@ -10,10 +9,10 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -27,6 +26,7 @@ import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class VideoFile(
@@ -71,6 +71,27 @@ fun formatDuration(milliseconds: Long): String {
 @Composable
 fun NovaPlayerScreen() {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val modelManager = remember(context) {
+        WhisperModelManager(context.applicationContext)
+    }
+
+    var modelInstalled by remember {
+        mutableStateOf(modelManager.isInstalled())
+    }
+
+    var downloading by remember {
+        mutableStateOf(false)
+    }
+
+    var downloadProgress by remember {
+        mutableIntStateOf(0)
+    }
+
+    var modelError by remember {
+        mutableStateOf<String?>(null)
+    }
 
     val permission = if (Build.VERSION.SDK_INT >= 33) {
         Manifest.permission.READ_MEDIA_VIDEO
@@ -81,7 +102,8 @@ fun NovaPlayerScreen() {
     var granted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(
-                context, permission
+                context,
+                permission
             ) == PackageManager.PERMISSION_GRANTED
         )
     }
@@ -173,7 +195,10 @@ fun NovaPlayerScreen() {
         videos, search, sortMode
     ) {
         val filtered = videos.filter {
-            it.title.contains(search, ignoreCase = true)
+            it.title.contains(
+                search,
+                ignoreCase = true
+            )
         }
 
         when (sortMode) {
@@ -197,7 +222,10 @@ fun NovaPlayerScreen() {
             .toSortedMap(String.CASE_INSENSITIVE_ORDER)
     }
 
-    BackHandler(enabled = selectedFolder != null) {
+    BackHandler(
+        enabled = selectedUri == null &&
+            selectedFolder != null
+    ) {
         selectedFolder = null
     }
 
@@ -219,10 +247,97 @@ fun NovaPlayerScreen() {
                 modifier = Modifier.padding(16.dp)
             )
 
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "AI Speech Recognition",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+
+                    if (modelInstalled) {
+                        Text("Whisper model downloaded")
+
+                        Text(
+                            "Ready for speech recognition integration",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        Text(
+                            "Download Whisper multilingual model"
+                        )
+
+                        Button(
+                            enabled = !downloading,
+                            onClick = {
+                                downloading = true
+                                downloadProgress = 0
+                                modelError = null
+
+                                scope.launch {
+                                    try {
+                                        modelManager.downloadModel {
+                                            progress ->
+                                            scope.launch {
+                                                downloadProgress = progress
+                                            }
+                                        }
+
+                                        modelInstalled =
+                                            modelManager.isInstalled()
+
+                                        if (!modelInstalled) {
+                                            modelError =
+                                                "Model verification failed"
+                                        }
+                                    } catch (e: Exception) {
+                                        modelError =
+                                            e.localizedMessage
+                                                ?: "Download failed"
+                                    } finally {
+                                        downloading = false
+                                    }
+                                }
+                            }
+                        ) {
+                            Text(
+                                if (downloading) {
+                                    "Downloading..."
+                                } else {
+                                    "Download AI Model"
+                                }
+                            )
+                        }
+
+                        if (downloading) {
+                            LinearProgressIndicator(
+                                progress = {
+                                    downloadProgress / 100f
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Text("$downloadProgress%")
+                        }
+                    }
+
+                    modelError?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+
             Row(
-                modifier = Modifier.padding(
-                    horizontal = 12.dp
-                )
+                modifier = Modifier.padding(12.dp)
             ) {
                 Button(
                     onClick = {
@@ -252,16 +367,14 @@ fun NovaPlayerScreen() {
                 singleLine = true,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(12.dp)
+                    .padding(horizontal = 12.dp)
             )
 
             Row(
-                modifier = Modifier.padding(
-                    horizontal = 12.dp
-                )
+                modifier = Modifier.padding(12.dp)
             ) {
                 Text(
-                    text = "Videos: ${sortedVideos.size}",
+                    "Videos: ${sortedVideos.size}",
                     modifier = Modifier.weight(1f)
                 )
 
@@ -306,7 +419,7 @@ fun NovaPlayerScreen() {
 
             error?.let {
                 Text(
-                    text = it,
+                    it,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(12.dp)
                 )
@@ -460,7 +573,8 @@ fun loadVideos(context: Context): List<VideoFile> {
             ) 0L else cursor.getLong(dateIndex)
 
             val uri = ContentUris.withAppendedId(
-                collection, id
+                collection,
+                id
             )
 
             result.add(
