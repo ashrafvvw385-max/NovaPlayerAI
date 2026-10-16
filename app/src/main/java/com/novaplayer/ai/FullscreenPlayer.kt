@@ -5,8 +5,11 @@ import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.media.AudioManager
+import android.net.Uri
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -20,6 +23,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -37,19 +43,48 @@ fun FullscreenPlayer(
     }
 
     var locked by remember { mutableStateOf(false) }
-    var speedMenu by remember { mutableStateOf(false) }
     var showControls by remember { mutableStateOf(true) }
-    var playing by remember {
-        mutableStateOf(player.isPlaying)
-    }
+    var speedMenu by remember { mutableStateOf(false) }
+    var subtitleMenu by remember { mutableStateOf(false) }
+    var playing by remember { mutableStateOf(player.isPlaying) }
+    var subtitleUri by remember { mutableStateOf<Uri?>(null) }
 
     val maxVolume = remember {
-        audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-            .coerceAtLeast(1)
+        audio.getStreamMaxVolume(
+            AudioManager.STREAM_MUSIC
+        ).coerceAtLeast(1)
     }
 
     val originalOrientation = remember {
         activity.requestedOrientation
+    }
+
+    val subtitlePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            subtitleUri = uri
+
+            val currentItem = player.currentMediaItem
+            if (currentItem != null) {
+                val position = player.currentPosition
+                val wasPlaying = player.playWhenReady
+
+                val subtitle = MediaItem.SubtitleConfiguration.Builder(uri)
+                    .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                    .setLanguage("ar")
+                    .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                    .build()
+
+                val newItem = currentItem.buildUpon()
+                    .setSubtitleConfigurations(listOf(subtitle))
+                    .build()
+
+                player.setMediaItem(newItem, position)
+                player.prepare()
+                player.playWhenReady = wasPlaying
+            }
+        }
     }
 
     DisposableEffect(activity) {
@@ -68,9 +103,11 @@ fun FullscreenPlayer(
 
         onDispose {
             activity.requestedOrientation = originalOrientation
-            window.attributes = window.attributes.apply {
-                screenBrightness = oldBrightness
-            }
+
+            val params = window.attributes
+            params.screenBrightness = oldBrightness
+            window.attributes = params
+
             if (!wasFullscreen) {
                 window.clearFlags(
                     WindowManager.LayoutParams.FLAG_FULLSCREEN
@@ -261,7 +298,7 @@ fun FullscreenPlayer(
                         .background(
                             Color.Black.copy(alpha = 0.7f)
                         )
-                        .padding(12.dp),
+                        .padding(8.dp),
                     horizontalArrangement =
                         Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
@@ -325,6 +362,42 @@ fun FullscreenPlayer(
                                     }
                                 )
                             }
+                        }
+                    }
+
+                    Box {
+                        TextButton(
+                            onClick = { subtitleMenu = true }
+                        ) {
+                            Text("Subtitles")
+                        }
+
+                        DropdownMenu(
+                            expanded = subtitleMenu,
+                            onDismissRequest = {
+                                subtitleMenu = false
+                            }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Open SRT file") },
+                                onClick = {
+                                    subtitleMenu = false
+                                    subtitlePicker.launch(
+                                        arrayOf(
+                                            "application/x-subrip",
+                                            "text/plain",
+                                            "application/octet-stream",
+                                            "*/*"
+                                        )
+                                    )
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text("Online subtitles - Coming soon") },
+                                enabled = false,
+                                onClick = {}
+                            )
                         }
                     }
                 }
