@@ -17,7 +17,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -69,7 +68,6 @@ fun formatDuration(milliseconds: Long): String {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NovaPlayerScreen() {
     val context = LocalContext.current
@@ -155,7 +153,6 @@ fun NovaPlayerScreen() {
         if (granted) {
             loading = true
             error = null
-
             try {
                 videos = withContext(Dispatchers.IO) {
                     loadVideos(context)
@@ -337,7 +334,13 @@ fun NovaPlayerScreen() {
                                 Text("${files.size} videos")
                             },
                             leadingContent = {
-                                Text("📁")
+                                VideoThumbnail(
+                                    uri = files.first().uri,
+                                    modifier = Modifier.size(
+                                        width = 112.dp,
+                                        height = 64.dp
+                                    )
+                                )
                             },
                             modifier = Modifier.clickable {
                                 selectedFolder = folder
@@ -369,7 +372,13 @@ fun NovaPlayerScreen() {
                             )
                         },
                         leadingContent = {
-                            Text("▶")
+                            VideoThumbnail(
+                                uri = video.uri,
+                                modifier = Modifier.size(
+                                    width = 112.dp,
+                                    height = 64.dp
+                                )
+                            )
                         },
                         modifier = Modifier.clickable {
                             playVideo(video.uri)
@@ -426,7 +435,6 @@ fun loadVideos(context: Context): List<VideoFile> {
 
         while (cursor.moveToNext()) {
             val id = cursor.getLong(idIndex)
-
             val title = cursor.getString(nameIndex)
                 ?: "Unknown Video"
 
