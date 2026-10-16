@@ -13,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,11 +23,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -43,6 +42,7 @@ data class VideoFile(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme()
@@ -153,6 +153,7 @@ fun NovaPlayerScreen() {
         if (granted) {
             loading = true
             error = null
+
             try {
                 videos = withContext(Dispatchers.IO) {
                     loadVideos(context)
@@ -196,146 +197,187 @@ fun NovaPlayerScreen() {
             .toSortedMap(String.CASE_INSENSITIVE_ORDER)
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize()
-    ) {
-        Text(
-            text = "Nova Player AI",
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.padding(16.dp)
-        )
+    BackHandler(enabled = selectedFolder != null) {
+        selectedFolder = null
+    }
 
-        Row(
-            modifier = Modifier.padding(
-                horizontal = 12.dp
-            )
-        ) {
-            Button(
-                onClick = {
-                    picker.launch("video/*")
-                }
-            ) {
-                Text("Open Video")
+    if (selectedUri != null) {
+        FullscreenPlayer(
+            player = player,
+            onBack = {
+                player.stop()
+                selectedUri = null
             }
+        )
+    } else {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Text(
+                text = "Nova Player AI",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.padding(16.dp)
+            )
 
-            Spacer(Modifier.width(8.dp))
-
-            if (!granted) {
+            Row(
+                modifier = Modifier.padding(
+                    horizontal = 12.dp
+                )
+            ) {
                 Button(
                     onClick = {
-                        permissionLauncher.launch(permission)
+                        picker.launch("video/*")
                     }
                 ) {
-                    Text("Allow Videos")
+                    Text("Open Video")
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                if (!granted) {
+                    Button(
+                        onClick = {
+                            permissionLauncher.launch(permission)
+                        }
+                    ) {
+                        Text("Allow Videos")
+                    }
                 }
             }
-        }
 
-        if (selectedUri != null) {
-            AndroidView(
-                factory = {
-                    PlayerView(it).apply {
-                        this.player = player
-                    }
-                },
-                update = {
-                    it.player = player
-                },
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                label = { Text("Search videos") },
+                singleLine = true,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(230.dp)
-            )
-        }
-
-        OutlinedTextField(
-            value = search,
-            onValueChange = { search = it },
-            label = { Text("Search videos") },
-            singleLine = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp)
-        )
-
-        Row(
-            modifier = Modifier.padding(
-                horizontal = 12.dp
-            )
-        ) {
-            Text(
-                text = "Videos: ${sortedVideos.size}",
-                modifier = Modifier.weight(1f)
+                    .padding(12.dp)
             )
 
-            Box {
+            Row(
+                modifier = Modifier.padding(
+                    horizontal = 12.dp
+                )
+            ) {
+                Text(
+                    text = "Videos: ${sortedVideos.size}",
+                    modifier = Modifier.weight(1f)
+                )
+
+                Box {
+                    TextButton(
+                        onClick = {
+                            menuExpanded = true
+                        }
+                    ) {
+                        Text("Sort: $sortMode")
+                    }
+
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = {
+                            menuExpanded = false
+                        }
+                    ) {
+                        listOf(
+                            "Newest",
+                            "Name",
+                            "Size",
+                            "Duration"
+                        ).forEach { mode ->
+                            DropdownMenuItem(
+                                text = { Text(mode) },
+                                onClick = {
+                                    sortMode = mode
+                                    menuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (loading) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            error?.let {
+                Text(
+                    text = it,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+
+            if (selectedFolder != null) {
                 TextButton(
-                    onClick = { menuExpanded = true }
-                ) {
-                    Text("Sort: $sortMode")
-                }
-
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = {
-                        menuExpanded = false
+                    onClick = {
+                        selectedFolder = null
                     }
                 ) {
-                    listOf(
-                        "Newest",
-                        "Name",
-                        "Size",
-                        "Duration"
-                    ).forEach { mode ->
-                        DropdownMenuItem(
-                            text = { Text(mode) },
-                            onClick = {
-                                sortMode = mode
-                                menuExpanded = false
-                            }
-                        )
-                    }
+                    Text("Back to folders")
                 }
             }
-        }
 
-        if (loading) {
-            LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
+            if (selectedFolder == null) {
+                LazyColumn(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    folders.forEach { (folder, files) ->
+                        item(key = folder) {
+                            ListItem(
+                                headlineContent = {
+                                    Text(folder)
+                                },
+                                supportingContent = {
+                                    Text("${files.size} videos")
+                                },
+                                leadingContent = {
+                                    VideoThumbnail(
+                                        uri = files.first().uri,
+                                        modifier = Modifier.size(
+                                            width = 112.dp,
+                                            height = 64.dp
+                                        )
+                                    )
+                                },
+                                modifier = Modifier.clickable {
+                                    selectedFolder = folder
+                                }
+                            )
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            } else {
+                val folderVideos = sortedVideos.filter {
+                    it.folder == selectedFolder
+                }
 
-        error?.let {
-            Text(
-                text = it,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(12.dp)
-            )
-        }
-
-        if (selectedFolder != null) {
-            TextButton(
-                onClick = { selectedFolder = null }
-            ) {
-                Text("Back to folders")
-            }
-        }
-
-        if (selectedFolder == null) {
-            LazyColumn(
-                modifier = Modifier.weight(1f)
-            ) {
-                folders.forEach { (folder, files) ->
-                    item(key = folder) {
+                LazyColumn(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    items(
+                        items = folderVideos,
+                        key = { it.id }
+                    ) { video ->
                         ListItem(
                             headlineContent = {
-                                Text(folder)
+                                Text(video.title)
                             },
                             supportingContent = {
-                                Text("${files.size} videos")
+                                Text(
+                                    formatDuration(
+                                        video.duration
+                                    )
+                                )
                             },
                             leadingContent = {
                                 VideoThumbnail(
-                                    uri = files.first().uri,
+                                    uri = video.uri,
                                     modifier = Modifier.size(
                                         width = 112.dp,
                                         height = 64.dp
@@ -343,48 +385,11 @@ fun NovaPlayerScreen() {
                                 )
                             },
                             modifier = Modifier.clickable {
-                                selectedFolder = folder
+                                playVideo(video.uri)
                             }
                         )
                         HorizontalDivider()
                     }
-                }
-            }
-        } else {
-            val folderVideos = sortedVideos.filter {
-                it.folder == selectedFolder
-            }
-
-            LazyColumn(
-                modifier = Modifier.weight(1f)
-            ) {
-                items(
-                    items = folderVideos,
-                    key = { it.id }
-                ) { video ->
-                    ListItem(
-                        headlineContent = {
-                            Text(video.title)
-                        },
-                        supportingContent = {
-                            Text(
-                                formatDuration(video.duration)
-                            )
-                        },
-                        leadingContent = {
-                            VideoThumbnail(
-                                uri = video.uri,
-                                modifier = Modifier.size(
-                                    width = 112.dp,
-                                    height = 64.dp
-                                )
-                            )
-                        },
-                        modifier = Modifier.clickable {
-                            playVideo(video.uri)
-                        }
-                    )
-                    HorizontalDivider()
                 }
             }
         }
@@ -435,6 +440,7 @@ fun loadVideos(context: Context): List<VideoFile> {
 
         while (cursor.moveToNext()) {
             val id = cursor.getLong(idIndex)
+
             val title = cursor.getString(nameIndex)
                 ?: "Unknown Video"
 
