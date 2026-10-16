@@ -3,6 +3,7 @@ package com.novaplayer.ai
 
 import android.Manifest
 import android.content.ContentUris
+import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -16,6 +17,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -26,26 +28,48 @@ import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 data class VideoFile(
     val id: Long,
     val title: String,
     val uri: Uri,
-    val duration: Long
+    val duration: Long,
+    val folder: String,
+    val size: Long,
+    val date: Long
 )
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            MaterialTheme(
+                colorScheme = darkColorScheme()
+            ) {
                 NovaPlayerScreen()
             }
         }
     }
 }
 
+fun formatDuration(milliseconds: Long): String {
+    val seconds = milliseconds / 1000
+    val hours = seconds / 3600
+    val minutes = (seconds % 3600) / 60
+    val remaining = seconds % 60
+
+    return if (hours > 0) {
+        "%02d:%02d:%02d".format(
+            hours, minutes, remaining
+        )
+    } else {
+        "%02d:%02d".format(minutes, remaining)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NovaPlayerScreen() {
     val context = LocalContext.current
@@ -59,8 +83,7 @@ fun NovaPlayerScreen() {
     var granted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(
-                context,
-                permission
+                context, permission
             ) == PackageManager.PERMISSION_GRANTED
         )
     }
@@ -69,8 +92,32 @@ fun NovaPlayerScreen() {
         mutableStateOf<List<VideoFile>>(emptyList())
     }
 
+    var search by remember {
+        mutableStateOf("")
+    }
+
+    var sortMode by remember {
+        mutableStateOf("Newest")
+    }
+
+    var selectedFolder by remember {
+        mutableStateOf<String?>(null)
+    }
+
     var selectedUri by remember {
         mutableStateOf<Uri?>(null)
+    }
+
+    var menuExpanded by remember {
+        mutableStateOf(false)
+    }
+
+    var loading by remember {
+        mutableStateOf(false)
+    }
+
+    var error by remember {
+        mutableStateOf<String?>(null)
     }
 
     val player = remember {
@@ -106,8 +153,50 @@ fun NovaPlayerScreen() {
 
     LaunchedEffect(granted) {
         if (granted) {
-            videos = loadVideos(context)
+            loading = true
+            error = null
+
+            try {
+                videos = withContext(Dispatchers.IO) {
+                    loadVideos(context)
+                }
+            } catch (e: Exception) {
+                error = e.localizedMessage
+                    ?: "Unable to load videos"
+            } finally {
+                loading = false
+            }
+        } else {
+            videos = emptyList()
         }
+    }
+
+    val sortedVideos = remember(
+        videos, search, sortMode
+    ) {
+        val filtered = videos.filter {
+            it.title.contains(search, ignoreCase = true)
+        }
+
+        when (sortMode) {
+            "Name" -> filtered.sortedBy {
+                it.title.lowercase()
+            }
+            "Size" -> filtered.sortedByDescending {
+                it.size
+            }
+            "Duration" -> filtered.sortedByDescending {
+                it.duration
+            }
+            else -> filtered.sortedByDescending {
+                it.date
+            }
+        }
+    }
+
+    val folders = remember(sortedVideos) {
+        sortedVideos.groupBy { it.folder }
+            .toSortedMap(String.CASE_INSENSITIVE_ORDER)
     }
 
     Column(
@@ -120,7 +209,9 @@ fun NovaPlayerScreen() {
         )
 
         Row(
-            modifier = Modifier.padding(8.dp)
+            modifier = Modifier.padding(
+                horizontal = 12.dp
+            )
         ) {
             Button(
                 onClick = {
@@ -150,42 +241,148 @@ fun NovaPlayerScreen() {
                         this.player = player
                     }
                 },
+                update = {
+                    it.player = player
+                },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(240.dp)
+                    .height(230.dp)
             )
         }
 
-        Text(
-            text = "My Videos (${videos.size})",
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(16.dp)
+        OutlinedTextField(
+            value = search,
+            onValueChange = { search = it },
+            label = { Text("Search videos") },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
         )
 
-        LazyColumn {
-            items(videos) { video ->
-                ListItem(
-                    headlineContent = {
-                        Text(video.title)
-                    },
-                    supportingContent = {
-                        Text(
-                            "${video.duration / 1000} seconds"
-                        )
-                    },
-                    modifier = Modifier.clickable {
-                        playVideo(video.uri)
+        Row(
+            modifier = Modifier.padding(
+                horizontal = 12.dp
+            )
+        ) {
+            Text(
+                text = "Videos: ${sortedVideos.size}",
+                modifier = Modifier.weight(1f)
+            )
+
+            Box {
+                TextButton(
+                    onClick = { menuExpanded = true }
+                ) {
+                    Text("Sort: $sortMode")
+                }
+
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = {
+                        menuExpanded = false
                     }
-                )
-                HorizontalDivider()
+                ) {
+                    listOf(
+                        "Newest",
+                        "Name",
+                        "Size",
+                        "Duration"
+                    ).forEach { mode ->
+                        DropdownMenuItem(
+                            text = { Text(mode) },
+                            onClick = {
+                                sortMode = mode
+                                menuExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        if (loading) {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        error?.let {
+            Text(
+                text = it,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(12.dp)
+            )
+        }
+
+        if (selectedFolder != null) {
+            TextButton(
+                onClick = { selectedFolder = null }
+            ) {
+                Text("Back to folders")
+            }
+        }
+
+        if (selectedFolder == null) {
+            LazyColumn(
+                modifier = Modifier.weight(1f)
+            ) {
+                folders.forEach { (folder, files) ->
+                    item(key = folder) {
+                        ListItem(
+                            headlineContent = {
+                                Text(folder)
+                            },
+                            supportingContent = {
+                                Text("${files.size} videos")
+                            },
+                            leadingContent = {
+                                Text("📁")
+                            },
+                            modifier = Modifier.clickable {
+                                selectedFolder = folder
+                            }
+                        )
+                        HorizontalDivider()
+                    }
+                }
+            }
+        } else {
+            val folderVideos = sortedVideos.filter {
+                it.folder == selectedFolder
+            }
+
+            LazyColumn(
+                modifier = Modifier.weight(1f)
+            ) {
+                items(
+                    items = folderVideos,
+                    key = { it.id }
+                ) { video ->
+                    ListItem(
+                        headlineContent = {
+                            Text(video.title)
+                        },
+                        supportingContent = {
+                            Text(
+                                formatDuration(video.duration)
+                            )
+                        },
+                        leadingContent = {
+                            Text("▶")
+                        },
+                        modifier = Modifier.clickable {
+                            playVideo(video.uri)
+                        }
+                    )
+                    HorizontalDivider()
+                }
             }
         }
     }
 }
 
-fun loadVideos(
-    context: android.content.Context
-): List<VideoFile> {
+fun loadVideos(context: Context): List<VideoFile> {
     val result = mutableListOf<VideoFile>()
 
     val collection =
@@ -194,50 +391,73 @@ fun loadVideos(
     val projection = arrayOf(
         MediaStore.Video.Media._ID,
         MediaStore.Video.Media.DISPLAY_NAME,
-        MediaStore.Video.Media.DURATION
+        MediaStore.Video.Media.DURATION,
+        MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
+        MediaStore.Video.Media.SIZE,
+        MediaStore.Video.Media.DATE_ADDED
     )
-
-    val sortOrder =
-        "${MediaStore.Video.Media.DATE_ADDED} DESC"
 
     context.contentResolver.query(
         collection,
         projection,
         null,
         null,
-        sortOrder
+        "${MediaStore.Video.Media.DATE_ADDED} DESC"
     )?.use { cursor ->
 
-        val idColumn = cursor.getColumnIndexOrThrow(
+        val idIndex = cursor.getColumnIndexOrThrow(
             MediaStore.Video.Media._ID
         )
-        val nameColumn = cursor.getColumnIndexOrThrow(
+        val nameIndex = cursor.getColumnIndexOrThrow(
             MediaStore.Video.Media.DISPLAY_NAME
         )
-        val durationColumn = cursor.getColumnIndexOrThrow(
+        val durationIndex = cursor.getColumnIndexOrThrow(
             MediaStore.Video.Media.DURATION
+        )
+        val folderIndex = cursor.getColumnIndexOrThrow(
+            MediaStore.Video.Media.BUCKET_DISPLAY_NAME
+        )
+        val sizeIndex = cursor.getColumnIndexOrThrow(
+            MediaStore.Video.Media.SIZE
+        )
+        val dateIndex = cursor.getColumnIndexOrThrow(
+            MediaStore.Video.Media.DATE_ADDED
         )
 
         while (cursor.moveToNext()) {
-            val id = cursor.getLong(idColumn)
-            val name = cursor.getString(nameColumn) ?: "Video"
-            val duration = if (cursor.isNull(durationColumn)) {
-                0L
-            } else {
-                cursor.getLong(durationColumn)
-            }
+            val id = cursor.getLong(idIndex)
+
+            val title = cursor.getString(nameIndex)
+                ?: "Unknown Video"
+
+            val duration = if (
+                cursor.isNull(durationIndex)
+            ) 0L else cursor.getLong(durationIndex)
+
+            val folder = cursor.getString(folderIndex)
+                ?: "Other Videos"
+
+            val size = if (
+                cursor.isNull(sizeIndex)
+            ) 0L else cursor.getLong(sizeIndex)
+
+            val date = if (
+                cursor.isNull(dateIndex)
+            ) 0L else cursor.getLong(dateIndex)
 
             val uri = ContentUris.withAppendedId(
-                collection,
-                id
+                collection, id
             )
 
             result.add(
                 VideoFile(
                     id = id,
-                    title = name,
+                    title = title,
                     uri = uri,
-                    duration = duration
+                    duration = duration,
+                    folder = folder,
+                    size = size,
+                    date = date
                 )
             )
         }
