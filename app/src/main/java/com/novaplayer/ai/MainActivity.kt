@@ -24,10 +24,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.exoplayer.ExoPlayer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 data class VideoFile(
     val id: Long,
@@ -42,11 +46,8 @@ data class VideoFile(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         setContent {
-            MaterialTheme(
-                colorScheme = darkColorScheme()
-            ) {
+            MaterialTheme(colorScheme = darkColorScheme()) {
                 NovaPlayerScreen()
             }
         }
@@ -77,6 +78,10 @@ fun NovaPlayerScreen() {
         WhisperModelManager(context.applicationContext)
     }
 
+    val transcriber = remember(context) {
+        VideoTranscriber(context.applicationContext)
+    }
+
     var modelInstalled by remember {
         mutableStateOf(modelManager.isInstalled())
     }
@@ -93,6 +98,38 @@ fun NovaPlayerScreen() {
         mutableStateOf<String?>(null)
     }
 
+    var processing by remember {
+        mutableStateOf(false)
+    }
+
+    var processingProgress by remember {
+        mutableIntStateOf(0)
+    }
+
+    var processedSegments by remember {
+        mutableIntStateOf(0)
+    }
+
+    var transcriptionJob by remember {
+        mutableStateOf<Job?>(null)
+    }
+
+    var transcriptionResult by remember {
+        mutableStateOf<TranscriptionResult?>(null)
+    }
+
+    var transcriptionError by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    var selectedVideoTitle by remember {
+        mutableStateOf("No video selected")
+    }
+
+    var transcriptionUri by remember {
+        mutableStateOf<Uri?>(null)
+    }
+
     val permission = if (Build.VERSION.SDK_INT >= 33) {
         Manifest.permission.READ_MEDIA_VIDEO
     } else {
@@ -102,8 +139,7 @@ fun NovaPlayerScreen() {
     var granted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(
-                context,
-                permission
+                context, permission
             ) == PackageManager.PERMISSION_GRANTED
         )
     }
@@ -150,11 +186,56 @@ fun NovaPlayerScreen() {
         }
     }
 
-    fun playVideo(uri: Uri) {
+    fun playVideo(uri: Uri, title: String = "Selected video") {
+        selectedVideoTitle = title
+        transcriptionUri = uri
         selectedUri = uri
-        player.setMediaItem(MediaItem.fromUri(uri))
+
+        val item = MediaItem.Builder()
+            .setUri(uri)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(title)
+                    .build()
+            )
+            .build()
+
+        player.setMediaItem(item)
         player.prepare()
         player.play()
+    }
+
+    fun startTranscription(uri: Uri) {
+        if (processing) return
+
+        transcriptionResult = null
+        transcriptionError = null
+        processingProgress = 0
+        processedSegments = 0
+        processing = true
+
+        transcriptionJob = scope.launch {
+            try {
+                val result = transcriber.transcribeFullVideo(
+                    videoUri = uri,
+                    language = "auto",
+                    onProgress = { progress ->
+                        processingProgress = progress.percent
+                        processedSegments = progress.segmentCount
+                    }
+                )
+                transcriptionResult = result
+            } catch (e: CancellationException) {
+                transcriptionError = "Processing cancelled"
+                throw e
+            } catch (e: Exception) {
+                transcriptionError =
+                    e.localizedMessage ?: "Transcription failed"
+            } finally {
+                processing = false
+                transcriptionJob = null
+            }
+        }
     }
 
     val permissionLauncher =
@@ -169,6 +250,41 @@ fun NovaPlayerScreen() {
             ActivityResultContracts.GetContent()
         ) { uri ->
             uri?.let { playVideo(it) }
+        }
+
+    var exportFile by remember {
+        mutableStateOf<File?>(null)
+    }
+
+    val exportLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument(
+                "application/x-subrip"
+            )
+        ) { uri ->
+            val source = exportFile
+            if (uri != null && source != null) {
+                scope.launch {
+                    try {
+                        withContext(Dispatchers.IO) {
+                            val output = context.contentResolver
+                                .openOutputStream(uri)
+                                ?: throw IllegalStateException(
+                                    "Cannot open output file"
+                                )
+
+                            output.use {
+                                source.inputStream().use { input ->
+                                    input.copyTo(it)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        transcriptionError =
+                            e.localizedMessage ?: "Export failed"
+                    }
+                }
+            }
         }
 
     LaunchedEffect(granted) {
@@ -195,10 +311,7 @@ fun NovaPlayerScreen() {
         videos, search, sortMode
     ) {
         val filtered = videos.filter {
-            it.title.contains(
-                search,
-                ignoreCase = true
-            )
+            it.title.contains(search, ignoreCase = true)
         }
 
         when (sortMode) {
@@ -242,7 +355,7 @@ fun NovaPlayerScreen() {
             modifier = Modifier.fillMaxSize()
         ) {
             Text(
-                text = "Nova Player AI",
+                "Nova Player AI",
                 style = MaterialTheme.typography.headlineMedium,
                 modifier = Modifier.padding(16.dp)
             )
@@ -262,17 +375,8 @@ fun NovaPlayerScreen() {
                     )
 
                     if (modelInstalled) {
-                        Text("Whisper model downloaded")
-
-                        Text(
-                            "Ready for speech recognition integration",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Text("Whisper model installed")
                     } else {
-                        Text(
-                            "Download Whisper multilingual model"
-                        )
-
                         Button(
                             enabled = !downloading,
                             onClick = {
@@ -282,8 +386,7 @@ fun NovaPlayerScreen() {
 
                                 scope.launch {
                                     try {
-                                        modelManager.downloadModel {
-                                            progress ->
+                                        modelManager.downloadModel { progress ->
                                             scope.launch {
                                                 downloadProgress = progress
                                             }
@@ -291,11 +394,6 @@ fun NovaPlayerScreen() {
 
                                         modelInstalled =
                                             modelManager.isInstalled()
-
-                                        if (!modelInstalled) {
-                                            modelError =
-                                                "Model verification failed"
-                                        }
                                     } catch (e: Exception) {
                                         modelError =
                                             e.localizedMessage
@@ -322,7 +420,6 @@ fun NovaPlayerScreen() {
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             )
-
                             Text("$downloadProgress%")
                         }
                     }
@@ -332,6 +429,79 @@ fun NovaPlayerScreen() {
                             it,
                             color = MaterialTheme.colorScheme.error
                         )
+                    }
+
+                    Text(
+                        "Video: $selectedVideoTitle",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                    Button(
+                        enabled = modelInstalled &&
+                            !processing &&
+                            transcriptionUri != null,
+                        onClick = {
+                            transcriptionUri?.let { uri ->
+                                startTranscription(uri)
+                            }
+                        }
+                    ) {
+                        Text("Transcribe Full Video")
+                    }
+
+                    if (processing) {
+                        LinearProgressIndicator(
+                            progress = {
+                                processingProgress / 100f
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Text(
+                            "$processingProgress% - " +
+                                "$processedSegments segments"
+                        )
+
+                        OutlinedButton(
+                            onClick = {
+                                transcriptionJob?.cancel()
+                            }
+                        ) {
+                            Text("Cancel Processing")
+                        }
+                    }
+
+                    transcriptionError?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+
+                    transcriptionResult?.let { result ->
+                        Text(
+                            "Transcription completed: " +
+                                "${result.segments.size} segments"
+                        )
+
+                        Button(
+                            onClick = {
+                                exportFile = result.subtitleFile
+                                exportLauncher.launch(
+                                    result.subtitleFile.name
+                                )
+                            }
+                        ) {
+                            Text("Save SRT")
+                        }
+
+                        result.segments.take(5).forEach { segment ->
+                            Text(
+                                "${formatDuration(segment.startMs)} " +
+                                    segment.text,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                     }
                 }
             }
@@ -483,9 +653,7 @@ fun NovaPlayerScreen() {
                             },
                             supportingContent = {
                                 Text(
-                                    formatDuration(
-                                        video.duration
-                                    )
+                                    formatDuration(video.duration)
                                 )
                             },
                             leadingContent = {
@@ -498,7 +666,10 @@ fun NovaPlayerScreen() {
                                 )
                             },
                             modifier = Modifier.clickable {
-                                playVideo(video.uri)
+                                playVideo(
+                                    video.uri,
+                                    video.title
+                                )
                             }
                         )
                         HorizontalDivider()
@@ -553,7 +724,6 @@ fun loadVideos(context: Context): List<VideoFile> {
 
         while (cursor.moveToNext()) {
             val id = cursor.getLong(idIndex)
-
             val title = cursor.getString(nameIndex)
                 ?: "Unknown Video"
 
