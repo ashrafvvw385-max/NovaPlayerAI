@@ -3,11 +3,14 @@ package com.novaplayer.ai
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.coroutines.coroutineContext
 
 class WhisperModelManager(
     private val context: Context
@@ -19,17 +22,31 @@ class WhisperModelManager(
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
 
         private const val MIN_MODEL_SIZE = 400_000_000L
+        private const val MAX_MODEL_SIZE = 1_000_000_000L
     }
 
     private val modelDirectory: File
-        get() = File(context.filesDir, "whisper_models")
+        get() = File(
+            context.filesDir,
+            "whisper_models"
+        )
 
     val modelFile: File
-        get() = File(modelDirectory, MODEL_NAME)
+        get() = File(
+            modelDirectory,
+            MODEL_NAME
+        )
+
+    private val temporaryFile: File
+        get() = File(
+            modelDirectory,
+            "$MODEL_NAME.part"
+        )
 
     fun isInstalled(): Boolean {
         return modelFile.isFile &&
-            modelFile.length() >= MIN_MODEL_SIZE
+            modelFile.length() in
+                MIN_MODEL_SIZE..MAX_MODEL_SIZE
     }
 
     suspend fun downloadModel(
@@ -41,12 +58,30 @@ class WhisperModelManager(
             return@withContext modelFile
         }
 
-        modelDirectory.mkdirs()
+        if (!modelDirectory.exists() &&
+            !modelDirectory.mkdirs()
+        ) {
+            throw IOException(
+                "Cannot create model directory"
+            )
+        }
 
-        val temporaryFile = File(
-            modelDirectory,
-            "$MODEL_NAME.part"
-        )
+        var existingBytes = if (
+            temporaryFile.exists()
+        ) {
+            temporaryFile.length()
+        } else {
+            0L
+        }
+
+        if (existingBytes > MAX_MODEL_SIZE) {
+            if (!temporaryFile.delete()) {
+                throw IOException(
+                    "Cannot reset invalid partial download"
+                )
+            }
+            existingBytes = 0L
+        }
 
         val connection = (
             URL(MODEL_URL).openConnection()
@@ -55,95 +90,153 @@ class WhisperModelManager(
             connectTimeout = 30000
             readTimeout = 60000
             instanceFollowRedirects = true
+
             setRequestProperty(
                 "User-Agent",
                 "NovaPlayerAI/1.0"
             )
+
+            if (existingBytes > 0L) {
+                setRequestProperty(
+                    "Range",
+                    "bytes=$existingBytes-"
+                )
+            }
         }
 
         try {
-            val existing = if (temporaryFile.exists()) {
-                temporaryFile.length()
-            } else {
-                0L
-            }
-
-            if (existing > 0L) {
-                connection.setRequestProperty(
-                    "Range",
-                    "bytes=$existing-"
-                )
-            }
-
-            connection.connect()
-
             val status = connection.responseCode
 
             if (status != HttpURLConnection.HTTP_OK &&
                 status != HttpURLConnection.HTTP_PARTIAL
             ) {
                 throw IOException(
-                    "Download failed: HTTP $status"
+                    "Model download failed: HTTP $status"
                 )
             }
 
-            val append =
+            val append = (
                 status == HttpURLConnection.HTTP_PARTIAL &&
-                    existing > 0L
+                    existingBytes > 0L
+            )
+
+            if (append) {
+                val contentRange = connection.getHeaderField(
+                    "Content-Range"
+                ) ?: throw IOException(
+                    "Missing Content-Range"
+                )
+
+                val rangeStart = Regex(
+                    """bytes\s+(\d+)-\d+/\d+"""
+                ).find(contentRange)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.toLongOrNull()
+
+                if (rangeStart != existingBytes) {
+                    throw IOException(
+                        "Invalid resume offset"
+                    )
+                }
+            }
 
             val startingBytes = if (append) {
-                existing
+                existingBytes
             } else {
                 0L
             }
 
-            val expectedTotal =
+            val contentLength =
                 connection.contentLengthLong
-                    .takeIf { it > 0L }
-                    ?.plus(startingBytes)
-                    ?: -1L
+
+            val expectedTotal = if (
+                contentLength > 0L
+            ) {
+                contentLength + startingBytes
+            } else {
+                -1L
+            }
+
+            if (expectedTotal > MAX_MODEL_SIZE) {
+                throw IOException(
+                    "Model exceeds size limit"
+                )
+            }
 
             var downloaded = startingBytes
+            var lastProgress = -1
 
             connection.inputStream.use { input ->
-                temporaryFile.outputStream(append).use { output ->
+                FileOutputStream(
+                    temporaryFile,
+                    append
+                ).use { output ->
+
                     val buffer = ByteArray(64 * 1024)
 
                     while (true) {
+                        coroutineContext.ensureActive()
+
                         val count = input.read(buffer)
 
-                        if (count == -1) break
+                        if (count == -1) {
+                            break
+                        }
 
-                        output.write(buffer, 0, count)
+                        output.write(
+                            buffer,
+                            0,
+                            count
+                        )
+
                         downloaded += count
 
+                        if (downloaded > MAX_MODEL_SIZE) {
+                            throw IOException(
+                                "Downloaded model is too large"
+                            )
+                        }
+
                         if (expectedTotal > 0L) {
-                            val percent = (
+                            val progress = (
                                 downloaded * 100L /
                                     expectedTotal
                             ).toInt().coerceIn(0, 99)
 
-                            onProgress(percent)
+                            if (progress != lastProgress) {
+                                lastProgress = progress
+                                onProgress(progress)
+                            }
                         }
                     }
+
+                    output.flush()
+                    output.fd.sync()
                 }
             }
 
+            val actualSize = temporaryFile.length()
+
             if (expectedTotal > 0L &&
-                temporaryFile.length() != expectedTotal
+                actualSize != expectedTotal
             ) {
                 throw IOException(
                     "Incomplete model download"
                 )
             }
 
-            if (temporaryFile.length() < MIN_MODEL_SIZE) {
+            if (actualSize !in
+                MIN_MODEL_SIZE..MAX_MODEL_SIZE
+            ) {
                 throw IOException(
-                    "Downloaded model is too small"
+                    "Invalid model file size"
                 )
             }
 
-            if (modelFile.exists() && !modelFile.delete()) {
+            if (modelFile.exists() &&
+                !modelFile.delete()
+            ) {
                 throw IOException(
                     "Cannot replace existing model"
                 )
@@ -151,11 +244,12 @@ class WhisperModelManager(
 
             if (!temporaryFile.renameTo(modelFile)) {
                 throw IOException(
-                    "Cannot save downloaded model"
+                    "Cannot finalize model download"
                 )
             }
 
             onProgress(100)
+
             modelFile
 
         } finally {
