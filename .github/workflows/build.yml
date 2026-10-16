@@ -3,7 +3,9 @@ name: Build Android APK
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - development
   workflow_dispatch:
 
 permissions:
@@ -11,6 +13,7 @@ permissions:
 
 jobs:
   build:
+    name: Build Nova Player AI
     runs-on: ubuntu-latest
 
     steps:
@@ -26,19 +29,27 @@ jobs:
       - name: Install Android SDK Tools
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           SDK="$HOME/android-sdk"
           mkdir -p "$SDK/cmdline-tools"
+
           curl -fL --retry 3 \
             -o /tmp/android-tools.zip \
             "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+
           unzip -q /tmp/android-tools.zip -d /tmp/android-cli
-          mv /tmp/android-cli/cmdline-tools "$SDK/cmdline-tools/latest"
+
+          mv /tmp/android-cli/cmdline-tools \
+            "$SDK/cmdline-tools/latest"
+
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
           echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
           yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" \
             --sdk_root="$SDK" --licenses || true
+
           "$SDK/cmdline-tools/latest/bin/sdkmanager" \
             --sdk_root="$SDK" \
             "platform-tools" \
@@ -57,3 +68,4 @@ jobs:
           name: NovaPlayerAI-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 14
